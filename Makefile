@@ -1,6 +1,6 @@
 CC	:= gcc
 CFLAGS	:= -g -fPIC -g -O3 -Wall -Werror
-LDFLAGS	:=
+LDFLAGS	:= -lpthread
 
 EXEC	:= mpdproxy
 SOURCES	:= $(wildcard *.c)
