@@ -42,15 +42,15 @@ int config_read_file(config_t *config, FILE *fp){
 
 			if(strncmp(token, "Host", sizeof("Host")) == 0){
 				strncpy(config->host_s, value, MAX_LEN);
-				config->host_s[MAX_LEN] = '\0';
+				config->host_s[MAX_LEN - 1] = '\0';
 			} else if(strncmp(token, "Port", sizeof("Port")) == 0){
 				config->port_s = atoi(value);
 			} else if(strncmp(token, "Password", sizeof("Password")) == 0){
 				strncpy(config->pass_s, value, MAX_LEN);
-				config->pass_s[MAX_LEN] = '\0';
+				config->pass_s[MAX_LEN - 1] = '\0';
 			} else if(strncmp(token, "Listen", sizeof("Listen")) == 0){
 				strncpy(config->host_p, value, MAX_LEN);
-				config->host_p[MAX_LEN] = '\0';
+				config->host_p[MAX_LEN - 1] = '\0';
 			} else {
 				config->port_p = atoi(value);
 			}

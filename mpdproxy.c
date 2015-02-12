@@ -14,6 +14,7 @@
 #include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <netinet/in.h>
 
 #include "config.h"
@@ -24,21 +25,25 @@
 
 void *th_handler(void*);
 
+struct sockaddr_in addr_srv;
+
 static struct option long_options[] = {
 	{"config",	required_argument,	NULL, 'c'},
 	{0}
 };
 
-void die(const char* msg){
-	fprintf(stderr, "E: %s\n", msg);
+void die(const char *comp, const char *msg){
+	fprintf(stderr, "E (%d): %s: %s\n", errno, comp, msg);
 
 	if(errno) exit(errno);
 	else exit(EXIT_FAILURE);
 }
 
-void print_usage(char* progname){
-	fprintf(stderr, "Usage: %s [ -c | --config=CONFIG ]\n", progname);
-	exit(EXIT_FAILURE);
+void th_die(const char *comp, const char *msg){
+	fprintf(stderr, "E (%d): %s: %s\n", errno, comp, msg);
+
+	if(errno) pthread_exit(&errno);
+	else pthread_exit(NULL);
 }
 
 int main(int argc, char** argv){
@@ -54,10 +59,18 @@ int main(int argc, char** argv){
 	config_init(&config);
 	FILE *fp;
 	if((fp = fopen(config_f, "r")) == NULL)
-		die("cannot open configuration file: no such file or directory\n");
+		die("fopen", "cannot open configuration file: no such file or directory\n");
 
 	if(config_read_file(&config, fp) == CONFIG_FAILURE)
-		die("error reading configuration file\n");
+		die("config_read_file", "error reading configuration file\n");
+
+	// Server address
+	bzero(&addr_srv, sizeof(struct sockaddr));
+	addr_srv.sin_family = AF_INET;
+	printf("MPD Server: %s:%d\n", config.host_s, config.port_s);
+	if(inet_pton(AF_INET, config.host_s, &(addr_srv.sin_addr)) <= 0)
+		die("inet_pton", strerror(errno));
+	addr_srv.sin_port = htons(config.port_s);
 
 	printf("Listening on %s:%d\n", config.host_p, config.port_p);
 
@@ -75,11 +88,11 @@ int main(int argc, char** argv){
 
 	sock_srv = socket(AF_INET, SOCK_STREAM, 0);
 	if(sock_srv < 0)
-		die(strerror(errno));
+		die("socket", strerror(errno));
 
-	//~ int optval = 1;
-	//~ if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval) < 0)
-		//~ die(strerror(errno));
+	int optval = 1;
+	if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval) < 0)
+		die("setsockopt", strerror(errno));
 
 	//~ bzero((char *) &server, sizeof(server));
 	server.sin_family = AF_INET;
@@ -88,20 +101,20 @@ int main(int argc, char** argv){
 
 	if(bind(sock_srv, (struct sockaddr *) &server, sizeof(server)) < 0){
 		close(sock_srv);
-		die(strerror(errno));
+		die("bind", strerror(errno));
 	}
 
 	if(listen(sock_srv, BACKLOG) < 0){
 		close(sock_srv);
-		die(strerror(errno));
+		die("listen", strerror(errno));
 	};
 
 	while((sock_cli = accept(sock_srv, (struct sockaddr *) &client, &sin_size)) ){
 		if(pthread_create(&thread_id, NULL, th_handler, (void*) &sock_cli) < 0)
-			die(strerror(errno));
+			die("pthread_create", strerror(errno));
 	}
 	if(sock_cli < 0)
-		die(strerror(errno));
+		die("accept", strerror(errno));
 
 	close(sock_srv);
 
@@ -110,15 +123,72 @@ int main(int argc, char** argv){
 }
 
 // Thread handler
-void *th_handler(void *sock_cli){
-	int sock = * (int*) sock_cli;
+void *th_handler(void *sock){
 	char buffer[MAX_LEN];
 	int bytes;
 
-	while((bytes = recv(sock, buffer, MAX_LEN, 0)) > 0){
-		buffer[bytes] = '\0';
-		printf("Received: %s\n", buffer);
+	int id = (int) pthread_self();
+	printf("[%d] Connected\n", id);
+
+	int sock_srv, sock_cli = * (int*) sock;
+	if((sock_srv = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+		close(sock_cli);
+		die("socket", strerror(errno));
 	}
-	close(sock);
+
+	if(connect(sock_srv, (struct sockaddr *) &addr_srv, sizeof(struct sockaddr)) < 0){
+		close(sock_cli);
+		close(sock_srv);
+		die("connect", strerror(errno));
+	}
+
+
+	// Initial "OK MPD" message
+	if((bytes = recv(sock_srv, buffer, MAX_LEN, 0)) < 0){
+		close(sock_cli);
+		close(sock_srv);
+		th_die("recv", strerror(errno));
+	}
+	buffer[bytes] = '\0';
+	if(send(sock_cli, buffer, bytes, 0) < 0){
+		close(sock_cli);
+		close(sock_srv);
+		th_die("send_cli", strerror(errno));
+	}
+
+	// Receive from the client
+	while((bytes = recv(sock_cli, buffer, MAX_LEN, 0)) > 0){
+		buffer[bytes] = '\0';
+		printf("[%d] Received: %s", id, buffer);
+
+		// Send to the server
+		if(send(sock_srv, buffer, bytes, 0) < 0){
+			close(sock_cli);
+			close(sock_srv);
+			th_die("send_srv", strerror(errno));
+		}
+
+		// Receive from the server
+		if((bytes = recv(sock_srv, buffer, MAX_LEN, 0)) < 0){
+			close(sock_cli);
+			close(sock_srv);
+			th_die("recv", strerror(errno));
+		}
+		buffer[bytes] = '\0';
+		printf("[%d] Reply: %s", id, buffer);
+
+		// Send to the client
+		if(send(sock_cli, buffer, bytes, 0) < 0){
+			close(sock_cli);
+			close(sock_srv);
+			th_die("send_cli", strerror(errno));
+		}
+	}
+
+	close(sock_cli);
+	close(sock_srv);
+
+	printf("[%d] Closed connection\n", id);
+
 	return NULL;
 }
