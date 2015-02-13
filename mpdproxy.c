@@ -157,32 +157,49 @@ void *th_handler(void *sock){
 	}
 
 	// Receive from the client
-	while((bytes = recv(sock_cli, buffer, MAX_LEN, 0)) > 0){
+	while((bytes = recv(sock_cli, buffer, MAX_LEN - 1, 0)) > 0){
 		buffer[bytes] = '\0';
-		printf("[%d] Received: %s", id, buffer);
+		printf("[%d] Received %d bytes from client\n", id, bytes);
 
 		// Send to the server
-		if(send(sock_srv, buffer, bytes, 0) < 0){
+		int bytes_s;
+		if((bytes_s = send(sock_srv, buffer, bytes, 0)) < 0){
 			close(sock_cli);
 			close(sock_srv);
 			th_die("send_srv", strerror(errno));
 		}
+		printf("[%d] Sent %d bytes to server\n", id, bytes_s);
 
-		// Receive from the server
-		if((bytes = recv(sock_srv, buffer, MAX_LEN, 0)) < 0){
-			close(sock_cli);
-			close(sock_srv);
-			th_die("recv", strerror(errno));
-		}
-		buffer[bytes] = '\0';
-		printf("[%d] Reply: %s", id, buffer);
+		// End of client command
+		if(strstr(&buffer[bytes - 1], "\n") != NULL){
+			int bytes_r, bytes_s;
+			while((bytes_r = recv(sock_srv, buffer, MAX_LEN - 1, 0)) > 0){
+				buffer[bytes_r] = '\0';
+				printf("[%d] Received %d bytes from server\n", id, bytes_r);
 
-		// Send to the client
-		if(send(sock_cli, buffer, bytes, 0) < 0){
-			close(sock_cli);
-			close(sock_srv);
-			th_die("send_cli", strerror(errno));
+				// Reply to client
+				if((bytes_s = send(sock_cli, buffer, bytes_r, 0)) < 0){
+					close(sock_cli);
+					close(sock_srv);
+					th_die("send_cli", strerror(errno));
+				}
+				printf("[%d] Sent %d bytes to client\n", id, bytes_s);
+
+				// End of server reply
+				if(strstr(buffer, "\nOK") != NULL || strstr(buffer, "\nACK") != NULL)
+					break;
+			}
+			if(bytes_r < 0){
+				close(sock_cli);
+				close(sock_srv);
+				th_die("recv_srv", strerror(errno));
+			}
 		}
+	}
+	if(bytes < 0){
+		close(sock_cli);
+		close(sock_srv);
+		th_die("recv_cli", strerror(errno));
 	}
 
 	close(sock_cli);
