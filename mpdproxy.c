@@ -11,6 +11,7 @@
 #include <getopt.h>
 #include <string.h>
 #include <errno.h>
+#include <signal.h>
 #include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -21,16 +22,28 @@
 
 #define CONFIG "/etc/mpdproxy.conf"
 #define MAX_LEN 4096
-#define BACKLOG 5
+#define BACKLOG 32
 
-void *th_handler(void*);
+void *th_sock_client(void*);
+void *th_sock_server(void*);
 
-struct sockaddr_in addr_srv;
+typedef struct connection_t {
+	int sock_srv;
+	int sock_cli;
+} connection_t;
+
+config_t config;
 
 static struct option long_options[] = {
 	{"config",	required_argument,	NULL, 'c'},
 	{0}
 };
+
+void sig_handler(int sig){
+	printf("Caught signal %d, exiting\n", sig);
+	config_destroy(&config);
+	exit(sig);
+}
 
 void die(const char *comp, const char *msg){
 	fprintf(stderr, "E (%d): %s: %s\n", errno, comp, msg);
@@ -47,6 +60,11 @@ void th_die(const char *comp, const char *msg){
 }
 
 int main(int argc, char** argv){
+	// Signal handler
+	signal(SIGINT, sig_handler);
+
+	struct sockaddr_in addr_srv;
+
 	char *config_f = CONFIG;
 
 	int option_index;
@@ -55,7 +73,6 @@ int main(int argc, char** argv){
 		config_f = strdup(optarg);
 
 	// Config file
-	config_t config;
 	config_init(&config);
 	FILE *fp;
 	if((fp = fopen(config_f, "r")) == NULL)
@@ -84,7 +101,7 @@ int main(int argc, char** argv){
 	int sock_srv, sock_cli;
 	struct sockaddr_in server, client;
 	socklen_t sin_size = sizeof(struct sockaddr_in);
-	pthread_t thread_id;
+	pthread_t th_client, th_server;
 
 	sock_srv = socket(AF_INET, SOCK_STREAM, 0);
 	if(sock_srv < 0)
@@ -94,7 +111,7 @@ int main(int argc, char** argv){
 	if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval) < 0)
 		die("setsockopt", strerror(errno));
 
-	//~ bzero((char *) &server, sizeof(server));
+	bzero((char *) &server, sizeof(server));
 	server.sin_family = AF_INET;
 	inet_aton(config.host_p, &server.sin_addr);
 	server.sin_port = htons(config.port_p);
@@ -109,9 +126,36 @@ int main(int argc, char** argv){
 		die("listen", strerror(errno));
 	};
 
-	while((sock_cli = accept(sock_srv, (struct sockaddr *) &client, &sin_size)) ){
-		if(pthread_create(&thread_id, NULL, th_handler, (void*) &sock_cli) < 0)
-			die("pthread_create", strerror(errno));
+	while((sock_cli = accept(sock_srv, (struct sockaddr *) &client, &sin_size))){
+		connection_t conn;
+		conn.sock_cli = sock_cli;
+
+		if((conn.sock_srv = socket(AF_INET, SOCK_STREAM, 0)) < 0){
+			close(sock_cli);
+			close(sock_srv);
+			die("socket", strerror(errno));
+		}
+
+		if(connect(conn.sock_srv, (struct sockaddr *) &addr_srv, sizeof(struct sockaddr)) < 0){
+			close(conn.sock_srv);
+			close(sock_cli);
+			close(sock_srv);
+			die("connect", strerror(errno));
+		}
+		
+		if(pthread_create(&th_client, NULL, th_sock_client, (void*) &conn) < 0){
+			close(conn.sock_srv);
+			close(sock_cli);
+			close(sock_srv);
+			die("pthread_create_client", strerror(errno));
+		}
+
+		if(pthread_create(&th_server, NULL, th_sock_server, (void*) &conn) < 0){
+			close(conn.sock_srv);
+			close(sock_cli);
+			close(sock_srv);
+			die("pthread_create_server", strerror(errno));
+		}
 	}
 	if(sock_cli < 0)
 		die("accept", strerror(errno));
@@ -122,90 +166,36 @@ int main(int argc, char** argv){
 	exit(EXIT_SUCCESS);
 }
 
-// Thread handler
-void *th_handler(void *sock){
+/**
+ * Threads
+ * 
+ * */
+void *th_sock_client(void *connection){
+	connection_t conn = * (connection_t*) connection;
+
 	char buffer[MAX_LEN];
 	int bytes;
 
-	int id = (int) pthread_self();
-	printf("[%d] Connected\n", id);
-
-	int sock_srv, sock_cli = * (int*) sock;
-	if((sock_srv = socket(AF_INET, SOCK_STREAM, 0)) < 0){
-		close(sock_cli);
-		die("socket", strerror(errno));
+	while((bytes = recv(conn.sock_cli, &buffer, MAX_LEN, 0)) > 0){
+		if((bytes = send(conn.sock_srv, &buffer, bytes, 0)) < 0)
+			break;
 	}
+	close(conn.sock_cli);
 
-	if(connect(sock_srv, (struct sockaddr *) &addr_srv, sizeof(struct sockaddr)) < 0){
-		close(sock_cli);
-		close(sock_srv);
-		die("connect", strerror(errno));
+	pthread_exit(NULL);
+}
+
+void *th_sock_server(void *connection){
+	connection_t conn = * (connection_t*) connection;
+
+	char buffer[MAX_LEN];
+	int bytes;
+
+	while((bytes = recv(conn.sock_srv, &buffer, MAX_LEN, 0)) > 0){
+		if((bytes = send(conn.sock_cli, &buffer, bytes, 0)) < 0)
+			break;
 	}
+	close(conn.sock_cli);
 
-
-	// Initial "OK MPD" message
-	if((bytes = recv(sock_srv, buffer, MAX_LEN, 0)) < 0){
-		close(sock_cli);
-		close(sock_srv);
-		th_die("recv", strerror(errno));
-	}
-	buffer[bytes] = '\0';
-	if(send(sock_cli, buffer, bytes, 0) < 0){
-		close(sock_cli);
-		close(sock_srv);
-		th_die("send_cli", strerror(errno));
-	}
-
-	// Receive from the client
-	while((bytes = recv(sock_cli, buffer, MAX_LEN - 1, 0)) > 0){
-		buffer[bytes] = '\0';
-		printf("[%d] Received %d bytes from client\n", id, bytes);
-
-		// Send to the server
-		int bytes_s;
-		if((bytes_s = send(sock_srv, buffer, bytes, 0)) < 0){
-			close(sock_cli);
-			close(sock_srv);
-			th_die("send_srv", strerror(errno));
-		}
-		printf("[%d] Sent %d bytes to server\n", id, bytes_s);
-
-		// End of client command
-		if(strstr(&buffer[bytes - 1], "\n") != NULL){
-			int bytes_r, bytes_s;
-			while((bytes_r = recv(sock_srv, buffer, MAX_LEN - 1, 0)) > 0){
-				buffer[bytes_r] = '\0';
-				printf("[%d] Received %d bytes from server\n", id, bytes_r);
-
-				// Reply to client
-				if((bytes_s = send(sock_cli, buffer, bytes_r, 0)) < 0){
-					close(sock_cli);
-					close(sock_srv);
-					th_die("send_cli", strerror(errno));
-				}
-				printf("[%d] Sent %d bytes to client\n", id, bytes_s);
-
-				// End of server reply
-				if(strstr(buffer, "\nOK") != NULL || strstr(buffer, "\nACK") != NULL)
-					break;
-			}
-			if(bytes_r < 0){
-				close(sock_cli);
-				close(sock_srv);
-				th_die("recv_srv", strerror(errno));
-			}
-		}
-	}
-	if(bytes < 0){
-		close(sock_cli);
-		close(sock_srv);
-		th_die("recv_cli", strerror(errno));
-	}
-
-	close(sock_cli);
-	close(sock_srv);
-
-	printf("[%d] Closed connection\n", id);
-
-	return NULL;
+	pthread_exit(NULL);
 }
