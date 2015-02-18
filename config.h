@@ -5,8 +5,8 @@
  * 
  * */
 
-#ifndef HEADER_H
-#define HEADER_H
+#ifndef CONFIG_H
+#define CONFIG_H
 
 #define CONFIG_SUCCESS 0
 #define CONFIG_FAILURE 1
