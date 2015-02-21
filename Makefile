@@ -1,7 +1,6 @@
 CC	:= gcc
-#~ CFLAGS	:= -fPIC -O3 -Wall -Werror
-CFLAGS	:= -g -fPIC -Wall -Werror -pthread 
-LDFLAGS	:= --wrap=pthread_exit
+CFLAGS	:= -fPIC -Wall -Werror -Wconversion -O3 -g
+LDFLAGS	:= -lpthread
 
 EXEC	:= mpdproxy
 SOURCES	:= $(wildcard *.c)

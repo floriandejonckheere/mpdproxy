@@ -18,18 +18,6 @@
 struct queue q;
 pthread_mutex_t mutex;
 
-void
-queue_print()
-{
-	struct queue *q_th;
-
-	pthread_mutex_lock(&q_mutex);
-	list_for_each_entry(q_th, &q.list, list){
-		printf("[queue] pthread_t = %d\n", (int) q_th->th_id);
-	}
-	pthread_mutex_unlock(&q_mutex);
-}
-
 static void
 die(const char *comp, const char *msg)
 {
@@ -74,8 +62,6 @@ queue_ins(pthread_t th_id)
 	pthread_mutex_lock(&q_mutex);
 	list_add(&q_new->list, &q.list);
 	pthread_mutex_unlock(&q_mutex);
-	printf("[ins] %d\n", (int) th_id);
-	//~ queue_print();
 }
 
 void
@@ -91,6 +77,4 @@ queue_rem(pthread_t th_id)
 		}
 	}
 	pthread_mutex_unlock(&q_mutex);
-	printf("[rem] %d\n", (int) th_id);
-	//~ queue_print();
 }
