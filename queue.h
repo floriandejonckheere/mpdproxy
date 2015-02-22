@@ -17,10 +17,9 @@ struct queue {
 	pthread_t th_id;
 };
 
-struct queue q;
+struct queue *q;
 pthread_mutex_t q_mutex;
 
-void queue_print();
 void queue_init();
 void queue_destroy();
 void queue_ins(pthread_t th_id);

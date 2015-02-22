@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <netdb.h>
 
 #include "config.h"
 #include "queue.h"
@@ -24,7 +25,6 @@
 
 #define CONFIG "/etc/mpdproxy.conf"
 #define MAX_LEN 4096
-#define BACKLOG 32
 
 #define TRUE 1
 #define FALSE 0
@@ -35,7 +35,7 @@ static void *th_cleanup_client(void*);
 static void *th_cleanup_server(void*);
 
 typedef struct connection_t {
-	int sock_srv;
+	int sock_prx;
 	int sock_cli;
 	pthread_t th_client;
 	pthread_t th_server;
@@ -43,10 +43,13 @@ typedef struct connection_t {
 } connection_t;
 
 config_t config;
+struct addrinfo *addr_prx;
 
 static struct option long_options[] = {
-	{"config",	required_argument,	NULL, 'c'},
-	{0}
+	{"config",	required_argument,	NULL,	'c'},
+	{"ipv4",	no_argument,		NULL,	'4'},
+	{"ipv6",	no_argument,		NULL,	'6'},
+	{0, 0, 0, 0}
 };
 
 static void
@@ -54,29 +57,33 @@ die(const char *comp, const char *msg)
 {
 	fprintf(stderr, "E (%d): %s: %s\n", errno, comp, msg);
 
-	struct queue *q_th, *q_tmp;
+	if(addr_prx) freeaddrinfo(addr_prx);
 
-	struct queue threads;
-	INIT_LIST_HEAD(&threads.list);
+	if(q != NULL){
+		struct queue *q_th, *q_tmp;
 
-	pthread_mutex_lock(&q_mutex);
-	list_for_each_entry_safe(q_th, q_tmp, &q.list, list){
-		struct queue *q_new = malloc(sizeof(struct queue));
-		q_new->th_id = q_th->th_id;
-		INIT_LIST_HEAD(&q_new->list);
+		struct queue threads;
+		INIT_LIST_HEAD(&threads.list);
 
-		list_add(&q_new->list, &threads.list);
+		pthread_mutex_lock(&q_mutex);
+		list_for_each_entry_safe(q_th, q_tmp, &q->list, list){
+			struct queue *q_new = malloc(sizeof(struct queue));
+			q_new->th_id = q_th->th_id;
+			INIT_LIST_HEAD(&q_new->list);
+
+			list_add(&q_new->list, &threads.list);
+		}
+		pthread_mutex_unlock(&q_mutex);
+
+		list_for_each_entry_safe(q_th, q_tmp, &threads.list, list){
+			pthread_cancel(q_th->th_id);
+			pthread_join(q_th->th_id, NULL);
+			list_del(&q_th->list);
+			free(q_th);
+		}
+
+		queue_destroy();
 	}
-	pthread_mutex_unlock(&q_mutex);
-
-	list_for_each_entry_safe(q_th, q_tmp, &threads.list, list){
-		pthread_cancel(q_th->th_id);
-		pthread_join(q_th->th_id, NULL);
-		list_del(&q_th->list);
-		free(q_th);
-	}
-
-	queue_destroy();
 	config_destroy(&config);
 
 	pthread_exit(&errno);
@@ -95,13 +102,42 @@ main(int argc, char** argv)
 	signal(SIGINT, sig_handler);
 
 	char *config_f = CONFIG;
+	int ipv4 = FALSE;
+	int ipv6 = FALSE;
 
-	int option_index;
-	int arg = getopt_long(argc, argv, "c:", long_options, &option_index);
-	if(arg != -1)
-		config_f = strdup(optarg);
+	int opt_idx, c;
 
-	// Config file
+	while((c = getopt_long(argc, argv, "c:46", long_options, &opt_idx)) != -1){
+		switch(c){
+			case 0:
+				if(long_options[opt_idx].flag != 0)
+					break;
+				printf("option %s", long_options[opt_idx].name);
+				if(optarg)
+					printf(" with arg %s", optarg);
+				printf ("\n");
+				break;
+			case 'c':
+				config_f = strdup(optarg);
+				break;
+			case '4':
+				ipv4 = TRUE;
+				break;
+			case '6':
+				ipv6 = TRUE;
+				break;
+			default:
+				abort();
+		}
+	}
+
+	if(!ipv4 && !ipv6)
+		ipv4 = ipv6 = TRUE;
+
+	/**
+	 * Configuration
+	 * 
+	 * */
 	config_init(&config);
 	FILE *fp;
 	if((fp = fopen(config_f, "r")) == NULL)
@@ -110,75 +146,111 @@ main(int argc, char** argv)
 	if(config_read_file(&config, fp) == CONFIG_FAILURE)
 		die("config_read_file", "error reading configuration file\n");
 
-	struct sockaddr_in addr_srv;
-	bzero(&addr_srv, sizeof(struct sockaddr));
-	addr_srv.sin_family = AF_INET;
-	if(inet_pton(AF_INET, config.host_s, &(addr_srv.sin_addr)) <= 0)
-		die("inet_pton", strerror(errno));
-	addr_srv.sin_port = htons(config.port_s);
-
-	printf("[main] Proxying %s:%d -> %s:%d\n",
-		config.host_p, config.port_p,
-		config.host_s, config.port_s);
-
 	fclose(fp);
 	free(config_f);
 
 	/**
-	 * Server
+	 * Networking
 	 * 
 	 * */
-	int sock_srv, sock_cli;
-	struct sockaddr_in server, client;
-	socklen_t sin_size = sizeof(struct sockaddr_in);
+	
+	int sock_srv, sock_cli, err, port;
+	struct addrinfo hints, *addr_srv, *p;
 
-	sock_srv = socket(AF_INET, SOCK_STREAM, 0);
-	if(sock_srv < 0)
-		die("socket", strerror(errno));
+	char s[INET6_ADDRSTRLEN];
 
-	int optval = 1;
-	if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval) < 0)
-		die("setsockopt", strerror(errno));
+	memset(&hints, 0, sizeof hints);
+	hints.ai_socktype = SOCK_STREAM;
 
-	bzero((char *) &server, sizeof(server));
-	server.sin_family = AF_INET;
-	inet_aton(config.host_p, &server.sin_addr);
-	server.sin_port = htons(config.port_p);
+	if(ipv4 && !ipv6){
+		hints.ai_family = AF_INET;
+	} else if(!ipv4 && ipv6){
+		hints.ai_family = AF_INET6;
+	} else hints.ai_family = AF_UNSPEC;
 
-	if(bind(sock_srv, (struct sockaddr *) &server, sizeof(server)) < 0){
-		close(sock_srv);
-		die("bind", strerror(errno));
+	// Proxy
+	if((err = getaddrinfo(config.host_prx, config.port_prx, &hints, &addr_prx)))
+		die("getaddr_proxy", gai_strerror(err));
+
+	hints.ai_flags = AI_PASSIVE;
+
+	// Server
+	if((err = getaddrinfo(config.host_srv, config.port_srv, &hints, &addr_srv)))
+		die("getaddrinfo", gai_strerror(err));
+
+	for(p = addr_srv; p != NULL; p = p->ai_next){
+		if((sock_srv = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1)
+			continue;
+
+		int optval = 1;
+		if(setsockopt(sock_srv, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval) < 0)
+			die("setsockopt", strerror(errno));
+
+		if(bind(sock_srv, p->ai_addr, p->ai_addrlen) == -1){
+			close(sock_srv);
+			continue;
+		}
+
+		break;
 	}
 
-	if(listen(sock_srv, BACKLOG) < 0){
+	if(p == NULL){
+		freeaddrinfo(addr_srv);
+		die("bind_srv", strerror(errno));
+	}
+
+	if(ipv4){
+		inet_ntop(AF_INET, &((struct sockaddr_in*) p->ai_addr)->sin_addr, s, sizeof(s));
+		port = htons(((struct sockaddr_in*) p->ai_addr)->sin_port);
+		printf("[main] Listening on %s:%d\n", s, port);
+	}
+	if(ipv6){
+		inet_ntop(AF_INET6, &((struct sockaddr_in6*) p->ai_addr)->sin6_addr, s, sizeof(s));
+		port = htons(((struct sockaddr_in6*) p->ai_addr)->sin6_port);
+		printf("[main] Listening on %s:%d\n", s, port);
+	}
+
+	freeaddrinfo(addr_srv);
+
+	if(listen(sock_srv, SOMAXCONN) < 0){
 		close(sock_srv);
 		die("listen", strerror(errno));
 	};
 
 	queue_init();
 
-	while((sock_cli = accept(sock_srv, (struct sockaddr *) &client, &sin_size))){
+	while((sock_cli = accept(sock_srv, NULL, NULL))){
 		connection_t *conn = malloc(sizeof(connection_t));
 		conn->sock_cli = sock_cli;
 		conn->srv_hup = TRUE;
 
-		if((conn->sock_srv = socket(AF_INET, SOCK_STREAM, 0)) < 0){
-			free(conn);
-			close(sock_cli);
-			close(sock_srv);
-			die("socket", strerror(errno));
+		for(p = addr_prx; p != NULL; p = p->ai_next){
+			if((conn->sock_prx = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1)
+				continue;
+
+			if(connect(conn->sock_prx, p->ai_addr, p->ai_addrlen)){
+				close(conn->sock_prx);
+				continue;
+			}
+
+			break;
 		}
 
-		if(connect(conn->sock_srv, (struct sockaddr *) &addr_srv, sizeof(struct sockaddr)) < 0){
-			close(conn->sock_srv);
-			free(conn);
-			close(sock_cli);
-			close(sock_srv);
-			die("connect", strerror(errno));
+		if(p == NULL){
+			die("bind_prx", strerror(errno));
 		}
+
+		if(p->ai_family == AF_INET){
+			inet_ntop(AF_INET, &((struct sockaddr_in*) p->ai_addr)->sin_addr, s, sizeof(s));
+			port = htons(((struct sockaddr_in*) p->ai_addr)->sin_port);
+		} else {
+			inet_ntop(AF_INET6, &((struct sockaddr_in6*) p->ai_addr)->sin6_addr, s, sizeof(s));
+			port = htons(((struct sockaddr_in6*) p->ai_addr)->sin6_port);
+		}
+		printf("[main] Proxying requests to %s:%d\n", s, port);
 
 		if(pthread_create(&(conn->th_client), NULL, &th_sock_client, conn)){
-			close(conn->sock_srv);
+			close(conn->sock_prx);
 			free(conn);
 			close(sock_cli);
 			close(sock_srv);
@@ -186,7 +258,7 @@ main(int argc, char** argv)
 		}
 
 		if(pthread_create(&(conn->th_server), NULL, &th_sock_server, conn)){
-			close(conn->sock_srv);
+			close(conn->sock_prx);
 			free(conn);
 			close(sock_cli);
 			close(sock_srv);
@@ -195,8 +267,6 @@ main(int argc, char** argv)
 	}
 	if(sock_cli < 0)
 		die("accept", strerror(errno));
-
-	// Resources are never freed here
 
 	pthread_exit(EXIT_SUCCESS);
 }
@@ -220,7 +290,7 @@ th_sock_client(void *connection)
 	ssize_t bytes;
 
 	while((bytes = recv(conn->sock_cli, &buffer, MAX_LEN, 0)) > 0){
-		if((bytes = send(conn->sock_srv, &buffer, (size_t) bytes, 0)) <= 0)
+		if((bytes = send(conn->sock_prx, &buffer, (size_t) bytes, 0)) <= 0)
 			break;
 	}
 
@@ -244,7 +314,7 @@ th_sock_server(void *connection)
 	char buffer[MAX_LEN];
 	ssize_t bytes;
 
-	while((bytes = recv(conn->sock_srv, &buffer, MAX_LEN, 0)) > 0){
+	while((bytes = recv(conn->sock_prx, &buffer, MAX_LEN, 0)) > 0){
 		if((bytes = send(conn->sock_cli, &buffer, (size_t) bytes, 0)) <= 0)
 			break;
 	}
@@ -279,7 +349,7 @@ th_cleanup_server(void *connection)
 {
 	connection_t *conn = (connection_t*) connection;
 
-	close(conn->sock_srv);
+	close(conn->sock_prx);
 	if(conn->srv_hup){
 		pthread_cancel(conn->th_client);
 		pthread_join(conn->th_client, NULL);

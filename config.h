@@ -12,12 +12,11 @@
 #define CONFIG_FAILURE 1
 
 typedef struct config_t {
-	char *host_s;
-	int port_s;
-	char *pass_s;
+	char *host_srv;
+	char *port_srv;
 
-	char *host_p;
-	int port_p;
+	char *host_prx;
+	char *port_prx;
 } config_t;
 
 void config_init(config_t *config);
