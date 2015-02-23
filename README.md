@@ -2,7 +2,24 @@
 
 mpdproxy is a simple TCP proxy for MPD. It listens on a certain port and proxies all requests (and responses) to a certain host and port asynchronously.
 
-Usage:
+**Usage**
 ```
 $ mpdproxy [ -c /path/to/mpdproxy.conf ]
 ```
+
+`-c` defaults to /etc/mpdproxy.conf
+
+**Configuration**
+
+The config file four directives:
+
+- `Host`: remote MPD server IP address or hostname
+- `Port`: remote MPD server port
+- `Listen`: Local MPD proxy server listen interface (usually `localhost`, `127.0.0.1` or `0.0.0.0`)
+- `ProxyPort`: Local MPD proxy server port
+
+Empty lines and lines starting with a hash are ignored. All other lines are parsed using the following format:
+```
+Directive Value
+```
+Where `Value` does not contain any spaces as the parser is too dumb to understand them.

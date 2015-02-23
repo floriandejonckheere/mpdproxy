@@ -1,5 +1,5 @@
 CC	:= gcc
-CFLAGS	:= -fPIC -Wall -Werror -Wconversion -g
+CFLAGS	:= -fPIC -Wall -Werror -Wconversion -O3 -g
 LDFLAGS	:= -lpthread
 
 EXEC	:= mpdproxy

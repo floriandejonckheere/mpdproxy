@@ -55,7 +55,7 @@ static struct option long_options[] = {
 static void
 die(const char *comp, const char *msg)
 {
-	fprintf(stderr, "E (%d): %s: %s\n", errno, comp, msg);
+	fprintf(stderr, "E (%d): %s: %s", errno, comp, msg);
 
 	if(addr_prx) freeaddrinfo(addr_prx);
 
@@ -92,7 +92,7 @@ die(const char *comp, const char *msg)
 static void
 sig_handler(int sig)
 {
-	die(strsignal(sig), "Caught signal, exiting");
+	die(strsignal(sig), "Caught signal, exiting\n");
 }
 
 int
