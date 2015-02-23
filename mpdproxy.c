@@ -55,7 +55,7 @@ static struct option long_options[] = {
 static void
 die(const char *comp, const char *msg)
 {
-	fprintf(stderr, "E (%d): %s: %s", errno, comp, msg);
+	fprintf(stderr, "E (%d): %s: %s\n", errno, comp, msg);
 
 	if(addr_prx) freeaddrinfo(addr_prx);
 
@@ -92,7 +92,7 @@ die(const char *comp, const char *msg)
 static void
 sig_handler(int sig)
 {
-	die(strsignal(sig), "Caught signal, exiting\n");
+	die(strsignal(sig), "Caught signal, exiting");
 }
 
 int
@@ -101,7 +101,7 @@ main(int argc, char** argv)
 	// Signal handler
 	signal(SIGINT, sig_handler);
 
-	char *config_f = CONFIG;
+	char *config_f = NULL;
 	int ipv4 = FALSE;
 	int ipv6 = FALSE;
 
@@ -131,6 +131,9 @@ main(int argc, char** argv)
 		}
 	}
 
+	if(!config_f)
+		config_f = strdup(CONFIG);
+
 	if(!ipv4 && !ipv6)
 		ipv4 = ipv6 = TRUE;
 
@@ -141,10 +144,10 @@ main(int argc, char** argv)
 	config_init(&config);
 	FILE *fp;
 	if((fp = fopen(config_f, "r")) == NULL)
-		die("fopen", "cannot open configuration file: no such file or directory\n");
+		die("fopen", "cannot open configuration file: no such file or directory");
 
 	if(config_read_file(&config, fp) == CONFIG_FAILURE)
-		die("config_read_file", "error reading configuration file\n");
+		die("config_read_file", "error reading configuration file");
 
 	fclose(fp);
 	free(config_f);
