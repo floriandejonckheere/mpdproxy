@@ -4,10 +4,12 @@ mpdproxy is a simple TCP proxy for MPD. It listens on a certain port and proxies
 
 **Usage**
 ```
-$ mpdproxy [ -c /path/to/mpdproxy.conf ]
+$ mpdproxy [ --config | -c /path/to/mpdproxy.conf ] [ --log | -l /path/to/mpdproxy.log ]
 ```
 
 `-c` defaults to /etc/mpdproxy.conf
+
+`-l` defaults to stderr
 
 **Configuration**
 

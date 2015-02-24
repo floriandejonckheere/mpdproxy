@@ -45,17 +45,28 @@ typedef struct connection_t {
 config_t config;
 struct addrinfo *addr_prx;
 
+FILE *errstr;
+
 static struct option long_options[] = {
 	{"config",	required_argument,	NULL,	'c'},
+	{"log",		required_argument,	NULL,	'l'},
 	{"ipv4",	no_argument,		NULL,	'4'},
 	{"ipv6",	no_argument,		NULL,	'6'},
 	{0, 0, 0, 0}
 };
 
 static void
+print(const char *comp, const char *msg)
+{
+	fprintf(errstr, "[%s]: %s (%d)\n", comp, msg, errno);
+	fflush(errstr);
+}
+
+static void
 die(const char *comp, const char *msg)
 {
-	fprintf(stderr, "E (%d): %s: %s\n", errno, comp, msg);
+	print(comp, msg);
+	fclose(errstr);
 
 	if(addr_prx) freeaddrinfo(addr_prx);
 
@@ -107,18 +118,26 @@ main(int argc, char** argv)
 
 	int opt_idx, c;
 
-	while((c = getopt_long(argc, argv, "c:46", long_options, &opt_idx)) != -1){
+	errstr = stderr;
+
+	while((c = getopt_long(argc, argv, "c:l:46", long_options, &opt_idx)) != -1){
 		switch(c){
 			case 0:
 				if(long_options[opt_idx].flag != 0)
 					break;
-				printf("option %s", long_options[opt_idx].name);
+				fprintf(stderr, "option %s", long_options[opt_idx].name);
 				if(optarg)
-					printf(" with arg %s", optarg);
-				printf ("\n");
+					fprintf(stderr, " with arg %s", optarg);
+				fprintf(stderr, "\n");
 				break;
 			case 'c':
 				config_f = strdup(optarg);
+				break;
+			case 'l':
+				if((errstr = fopen(optarg, "a")) == NULL){
+					errstr = stderr;
+					die("open_log", strerror(errno));
+				}
 				break;
 			case '4':
 				ipv4 = TRUE;
@@ -205,12 +224,12 @@ main(int argc, char** argv)
 	if(ipv4){
 		inet_ntop(AF_INET, &((struct sockaddr_in*) p->ai_addr)->sin_addr, s, sizeof(s));
 		port = htons(((struct sockaddr_in*) p->ai_addr)->sin_port);
-		printf("[main] Listening on %s:%d\n", s, port);
+		fprintf(errstr, "[main] Listening on %s:%d\n", s, port);
 	}
 	if(ipv6){
 		inet_ntop(AF_INET6, &((struct sockaddr_in6*) p->ai_addr)->sin6_addr, s, sizeof(s));
 		port = htons(((struct sockaddr_in6*) p->ai_addr)->sin6_port);
-		printf("[main] Listening on %s:%d\n", s, port);
+		fprintf(errstr, "[main] Listening on %s:%d\n", s, port);
 	}
 
 	freeaddrinfo(addr_srv);
@@ -240,7 +259,10 @@ main(int argc, char** argv)
 		}
 
 		if(p == NULL){
-			die("bind_prx", strerror(errno));
+			print("bind_prx", strerror(errno));
+			close(sock_cli);
+			free(conn);
+			continue;
 		}
 
 		if(p->ai_family == AF_INET){
@@ -250,7 +272,7 @@ main(int argc, char** argv)
 			inet_ntop(AF_INET6, &((struct sockaddr_in6*) p->ai_addr)->sin6_addr, s, sizeof(s));
 			port = htons(((struct sockaddr_in6*) p->ai_addr)->sin6_port);
 		}
-		printf("[main] Proxying requests to %s:%d\n", s, port);
+		fprintf(errstr, "[main] Proxying requests to %s:%d\n", s, port);
 
 		if(pthread_create(&(conn->th_client), NULL, &th_sock_client, conn)){
 			close(conn->sock_prx);
