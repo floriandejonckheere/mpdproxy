@@ -1,8 +1,8 @@
 /*
  * mpdproxy.c - MPD proxy server
- * 
+ *
  * Florian Dejonckheere <florian@floriandejonckheere.be>
- * 
+ *
  * */
 
 #include <stdio.h>
@@ -18,16 +18,18 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <wordexp.h>
 
 #include "config.h"
 #include "queue.h"
 #include "list.h"
 
-#define CONFIG "/etc/mpdproxy.conf"
-#define MAX_LEN 4096
+#define BUF_SIZE 4096
 
 #define TRUE 1
 #define FALSE 0
+
+const char* const config_files[] = { "~/.config/mpdproxy.conf", "/.mpdproxy.conf", "/etc/mpdproxy.conf" };
 
 static void *th_sock_client(void*);
 static void *th_sock_server(void*);
@@ -150,32 +152,38 @@ main(int argc, char** argv)
 		}
 	}
 
-	if(!config_f)
-		config_f = strdup(CONFIG);
-
 	if(!ipv4 && !ipv6)
 		ipv4 = ipv6 = TRUE;
 
 	/**
 	 * Configuration
-	 * 
+	 *
 	 * */
 	config_init(&config);
 	FILE *fp;
-	if((fp = fopen(config_f, "r")) == NULL)
-		die("fopen", "cannot open configuration file: no such file or directory");
+	if((fp = fopen(config_f, "r")) == NULL || config_read_file(&config, fp) == CONFIG_FAILURE){
+		int i, valid = FALSE;
+		wordexp_t exp;
+		for(i = 0; i < (sizeof(config_files) / sizeof(config_files[0])); i++){
+			wordexp(config_files[i], &exp, 0);
+			if((fp = fopen(exp.we_wordv[0], "r")) == NULL)
+				continue;
 
-	if(config_read_file(&config, fp) == CONFIG_FAILURE)
-		die("config_read_file", "error reading configuration file");
+			valid = TRUE;
+			break;
+		}
+		if(!valid)
+			die("config", "failed to find a config file");
+	}
 
 	fclose(fp);
 	free(config_f);
 
 	/**
 	 * Networking
-	 * 
+	 *
 	 * */
-	
+
 	int sock_srv, sock_cli, err, port;
 	struct addrinfo hints, *addr_srv, *p;
 
@@ -298,7 +306,7 @@ main(int argc, char** argv)
 
 /**
  * Threads
- * 
+ *
  * */
 static void *
 th_sock_client(void *connection)
@@ -311,10 +319,10 @@ th_sock_client(void *connection)
 	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
-	char buffer[MAX_LEN];
+	char buffer[BUF_SIZE];
 	ssize_t bytes;
 
-	while((bytes = recv(conn->sock_cli, &buffer, MAX_LEN, 0)) > 0){
+	while((bytes = recv(conn->sock_cli, &buffer, BUF_SIZE, 0)) > 0){
 		if((bytes = send(conn->sock_prx, &buffer, (size_t) bytes, 0)) <= 0)
 			break;
 	}
@@ -336,10 +344,10 @@ th_sock_server(void *connection)
 	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
-	char buffer[MAX_LEN];
+	char buffer[BUF_SIZE];
 	ssize_t bytes;
 
-	while((bytes = recv(conn->sock_prx, &buffer, MAX_LEN, 0)) > 0){
+	while((bytes = recv(conn->sock_prx, &buffer, BUF_SIZE, 0)) > 0){
 		if((bytes = send(conn->sock_cli, &buffer, (size_t) bytes, 0)) <= 0)
 			break;
 	}
