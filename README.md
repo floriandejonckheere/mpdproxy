@@ -4,14 +4,18 @@ mpdproxy is a simple TCP proxy for MPD. It listens on a certain port and proxies
 
 **Usage**
 ```
-$ mpdproxy [ --config | -c /path/to/mpdproxy.conf ] [ --log | -l /path/to/mpdproxy.log ]
+$ mpdproxy [ --config | -c /path/to/mpdproxy.conf ] [ --log | -l /path/to/mpdproxy.log ] [ -d | --daemon ]
 ```
 
 `-c` defaults to /etc/mpdproxy.conf
 
 `-l` defaults to stderr
 
+`-d` daemonizes the process
+
 **Configuration**
+
+The fallback config file can be found at /etc/mpdproxy.conf. It is advisable to copy this file to ~/.config/mpdproxy.conf or ~/.mpdproxy.conf.
 
 The config file four directives:
 

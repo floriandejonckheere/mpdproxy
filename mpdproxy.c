@@ -16,6 +16,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <wordexp.h>
@@ -54,6 +55,7 @@ static struct option long_options[] = {
 	{"log",		required_argument,	NULL,	'l'},
 	{"ipv4",	no_argument,		NULL,	'4'},
 	{"ipv6",	no_argument,		NULL,	'6'},
+	{"daemon",	no_argument,		NULL,	'd'},
 	{0, 0, 0, 0}
 };
 
@@ -117,12 +119,13 @@ main(int argc, char** argv)
 	char *config_f = NULL;
 	int ipv4 = FALSE;
 	int ipv6 = FALSE;
+	int daemon = FALSE;
 
 	int opt_idx, c;
 
 	errstr = stderr;
 
-	while((c = getopt_long(argc, argv, "c:l:46", long_options, &opt_idx)) != -1){
+	while((c = getopt_long(argc, argv, "c:l:46d", long_options, &opt_idx)) != -1){
 		switch(c){
 			case 0:
 				if(long_options[opt_idx].flag != 0)
@@ -147,6 +150,9 @@ main(int argc, char** argv)
 			case '6':
 				ipv6 = TRUE;
 				break;
+			case 'd':
+				daemon = TRUE;
+				break;
 			default:
 				abort();
 		}
@@ -154,6 +160,31 @@ main(int argc, char** argv)
 
 	if(!ipv4 && !ipv6)
 		ipv4 = ipv6 = TRUE;
+
+	if(daemon){
+		printf("[main] forking to background\n");
+		pid_t proc_id = fork();
+
+		if(proc_id < 0)
+			die("fork", strerror(errno));
+
+		// Parent process
+		if(proc_id > 0)
+			pthread_exit(EXIT_SUCCESS);
+
+		umask(0);
+		pid_t sid = setsid();
+
+		if(sid < 0)
+			die("sid", strerror(errno));
+
+		if(chdir("/") < 0)
+			die("chdir", strerror(errno));
+
+		close(STDIN_FILENO);
+		close(STDOUT_FILENO);
+		close(STDERR_FILENO);
+	}
 
 	/**
 	 * Configuration
