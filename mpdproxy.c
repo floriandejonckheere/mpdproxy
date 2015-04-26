@@ -170,10 +170,12 @@ main(int argc, char** argv)
 				continue;
 
 			valid = TRUE;
+			if(config_read_file(&config, fp) < 0)
+				continue;
 			break;
 		}
 		if(!valid)
-			die("config", "failed to find a config file");
+			die("config", "failed to find a valid config file");
 	}
 
 	fclose(fp);
